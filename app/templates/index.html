@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CCTV AI Guard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">AI</span>
+          <div>
+            <h1>CCTV AI Guard</h1>
+            <p>Security command center</p>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat-card">
+            <span>Total Cameras</span>
+            <strong id="total-cameras">0</strong>
+          </div>
+          <div class="stat-card danger">
+            <span>Active Alerts</span>
+            <strong id="active-alerts">0</strong>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="simulate-alert-btn">Simulate Alert</button>
+          <button id="clear-alerts-btn" class="secondary">Clear Alerts</button>
+        </div>
+
+        <form id="connect-camera-form" class="connect-form">
+          <div>
+            <h2>Add a camera</h2>
+            <p class="form-intro">Bring a live feed into your watch floor.</p>
+          </div>
+          <label>Camera name <input name="name" placeholder="Front entrance" required /></label>
+          <label>Location <input name="location" placeholder="Main gate" required /></label>
+          <label>Connection type
+            <select name="connection_type" id="connection-type">
+              <option value="rtsp">IP camera (RTSP)</option>
+              <option value="http">HTTP / MJPEG camera</option>
+              <option value="webcam">USB webcam</option>
+            </select>
+          </label>
+          <label>Camera stream address <input name="rtsp_url" id="camera-url" placeholder="rtsp://user:password@192.168.1.50:554/stream1" required /></label>
+          <p class="connect-help" id="connection-help">Example: rtsp://admin:password@192.168.1.50:554/stream1</p>
+          <button type="submit">Connect camera</button>
+          <p id="connect-message" role="status"></p>
+        </form>
+      </aside>
+
+      <main class="main-panel">
+        <header>
+          <div>
+            <p class="eyebrow">Monitoring live</p>
+            <h2>Live camera overview</h2>
+          </div>
+          <a class="profile-button" href="/profile" title="Open profile" aria-label="Open profile">&#128100;</a>
+        </header>
+
+        <section id="camera-grid" class="camera-grid"></section>
+
+        <section class="alerts-panel">
+          <h3>Recent alerts</h3>
+          <ul id="alert-list" class="alert-list"></ul>
+        </section>
+      </main>
+    </div>
+    <div id="alert-toast" class="alert-toast" role="alert" aria-live="assertive"></div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
