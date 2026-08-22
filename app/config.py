@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     mongodb_database: str = "cctv_guard"
     secret_key: str = "change-this-secret-key"
     yolo_model_path: str = "yolov8n.pt"
+    realtime_detection_enabled: bool = True
+    detection_interval_seconds: float = 1.0
+    detection_cooldown_seconds: float = 15.0
     frame_store_dir: str = "./captured_frames"
     default_admin_username: str = "admin"
     default_admin_password: str = "admin123"

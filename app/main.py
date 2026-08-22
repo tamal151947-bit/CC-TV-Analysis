@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import secrets
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -59,6 +60,9 @@ rtsp_manager = RTSPStreamManager(settings.frame_store_dir)
 yolo_service = YOLODetectionService(settings.yolo_model_path)
 db_service = CameraDatabaseService()
 active_camera_captures: dict[str, cv2.VideoCapture] = {}
+latest_camera_frames: dict[str, object] = {}
+last_detection_times: dict[tuple[str, ThreatType], float] = {}
+realtime_detection_task: asyncio.Task | None = None
 
 
 def notify_alert(event) -> None:
@@ -82,6 +86,61 @@ def notify_alert(event) -> None:
         image_path=event.image_path,
         to_address=recipient,
     )
+
+
+def create_detection_alert(camera_id: str, threat: ThreatType, confidence: float, frame) -> dict:
+    frame_path = os.path.join(
+        settings.frame_store_dir,
+        f"{camera_id}_{int(datetime.now(timezone.utc).timestamp() * 1000)}.jpg",
+    )
+    yolo_service.save_debug_frame(frame, frame_path)
+    detection = detection_service.detect(camera_id, threat, confidence, image_path=frame_path)
+    alert = detection_service.create_alert_event(detection)
+    alert_manager.add_alert(alert)
+    db_service.add_alert(
+        alert.id,
+        alert.camera_id,
+        alert.camera_name,
+        alert.threat_type.value,
+        alert.severity,
+        alert.message,
+        alert.image_path,
+    )
+    db_service.set_camera_alert(camera_id, alert.severity, CameraStatus.ALERT)
+    notify_alert(alert)
+    return alert.model_dump()
+
+
+async def realtime_detection_loop() -> None:
+    while True:
+        for camera in camera_registry.list_cameras():
+            frame = latest_camera_frames.get(camera.id)
+            if frame is None:
+                frame = await asyncio.to_thread(rtsp_manager.get_latest_frame, camera.rtsp_url)
+            if frame is None:
+                continue
+            threats, _ = await asyncio.to_thread(yolo_service.detect_threats, frame)
+            now = asyncio.get_running_loop().time()
+            for threat, confidence in threats:
+                key = (camera.id, threat)
+                if now - last_detection_times.get(key, 0.0) < settings.detection_cooldown_seconds:
+                    continue
+                last_detection_times[key] = now
+                create_detection_alert(camera.id, threat, confidence, frame)
+        await asyncio.sleep(settings.detection_interval_seconds)
+
+
+@app.on_event("startup")
+async def start_realtime_detection() -> None:
+    global realtime_detection_task
+    if settings.realtime_detection_enabled:
+        realtime_detection_task = asyncio.create_task(realtime_detection_loop())
+
+
+@app.on_event("shutdown")
+async def stop_realtime_detection() -> None:
+    if realtime_detection_task is not None:
+        realtime_detection_task.cancel()
 
 
 class SimulateAlertRequest(BaseModel):
@@ -375,6 +434,7 @@ async def remove_camera(camera_id: str, payload: RemoveCameraRequest, current_us
     active_capture = active_camera_captures.pop(camera_id, None)
     if active_capture is not None:
         active_capture.release()
+    latest_camera_frames.pop(camera_id, None)
     image_paths = db_service.remove_camera(camera_id)
     camera_registry.remove_camera(camera_id)
     alert_manager.alerts = [alert for alert in alert_manager.alerts if alert.camera_id != camera_id]
@@ -400,12 +460,14 @@ def generate_camera_frames(camera_id: str, rtsp_url: str):
             success, frame = cap.read()
             if not success:
                 break
+            latest_camera_frames[camera_id] = frame
             success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if not success:
                 continue
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
     finally:
         active_camera_captures.pop(camera_id, None)
+        latest_camera_frames.pop(camera_id, None)
         cap.release()
 
 
@@ -487,18 +549,11 @@ async def process_camera(camera_id: str) -> dict:
     frame = rtsp_manager.get_latest_frame(camera.rtsp_url)
     if frame is None:
         return {"status": "no_frame", "camera_id": camera_id}
-    frame_path = os.path.join(settings.frame_store_dir, f"{camera_id}_{int(datetime.now(timezone.utc).timestamp() * 1000)}.jpg")
-    yolo_service.save_debug_frame(frame, frame_path)
-    detected, boxes, _ = yolo_service.analyze_frame(frame)
-    if detected:
-        threat = ThreatType.SUSPICIOUS_ACTIVITY
-        detection = detection_service.detect(camera_id, threat, 0.93, image_path=frame_path)
-        alert = detection_service.create_alert_event(detection)
-        alert_manager.add_alert(alert)
-        db_service.add_alert(alert.id, alert.camera_id, alert.camera_name, alert.threat_type.value, alert.severity, alert.message, alert.image_path)
-        db_service.set_camera_alert(camera_id, alert.severity, CameraStatus.ALERT)
-        notify_alert(alert)
-        return {"status": "alert_created", "alert": alert.model_dump(), "detections": boxes}
+    threats, boxes = yolo_service.detect_threats(frame)
+    if threats:
+        threat, confidence = max(threats, key=lambda item: item[1])
+        alert = create_detection_alert(camera_id, threat, confidence, frame)
+        return {"status": "alert_created", "alert": alert, "detections": boxes}
     return {"status": "ok", "camera_id": camera_id, "detections": boxes}
 
 

@@ -17,6 +17,7 @@ This project is a starter for a real-time CCTV monitoring system that can evalua
 - FastAPI backend with a simple HTML dashboard
 - MongoDB-backed user registration and profiles
 - Email verification before first login
+- Real-time background detection while cameras are connected
 
 ## Project structure
 
@@ -66,4 +67,6 @@ After login, open `/profile` to update name, email, or password. Passwords are h
 
 ## Notes
 
-This starter uses simulated detections to demonstrate the alerting flow. To move to real model inference, connect the detection service to OpenCV, YOLO, or a custom vision pipeline.
+Real-time detection runs once per second by default. Configure it in `.env` with `REALTIME_DETECTION_ENABLED`, `DETECTION_INTERVAL_SECONDS`, and `DETECTION_COOLDOWN_SECONDS`.
+
+The bundled `yolov8n.pt` model detects general objects. It maps `person` or `intruder` to possible home intrusion. Accurate theft, robbery, stealing, fight, violence, and harassment detection requires a custom YOLO model trained with labels such as `theft`, `robbery`, `fight`, `violence`, or `harassment`; set its path with `YOLO_MODEL_PATH`. A general object model must not be treated as reliable proof of those behaviors.

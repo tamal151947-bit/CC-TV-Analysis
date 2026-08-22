@@ -6,6 +6,7 @@ from typing import Any, List, Tuple
 import cv2
 
 from app.config import get_settings
+from app.models import ThreatType
 
 settings = get_settings()
 
@@ -27,6 +28,36 @@ class YOLODetectionService:
     def analyze_frame(self, frame: Any) -> Tuple[bool, List[dict], str | None]:
         if self.model is None:
             return False, [], None
+
+    def detect_threats(self, frame: Any) -> tuple[list[tuple[ThreatType, float]], List[dict]]:
+        if self.model is None:
+            return [], []
+
+        try:
+            results = self.model(frame, verbose=False)[0]
+            detections = []
+            threats: dict[ThreatType, float] = {}
+            label_map = {
+                "person": ThreatType.INTRUSION,
+                "intruder": ThreatType.INTRUSION,
+                "theft": ThreatType.THEFT,
+                "stealing": ThreatType.THEFT,
+                "robbery": ThreatType.THEFT,
+                "fight": ThreatType.VIOLENCE,
+                "violence": ThreatType.VIOLENCE,
+                "harassment": ThreatType.VIOLENCE,
+            }
+            for box in results.boxes:
+                cls = int(box.cls[0])
+                confidence = float(box.conf[0])
+                label = self.model.names.get(cls, "object").lower()
+                detections.append({"label": label, "confidence": confidence})
+                threat = label_map.get(label)
+                if threat is not None:
+                    threats[threat] = max(threats.get(threat, 0.0), confidence)
+            return list(threats.items()), detections
+        except Exception:
+            return [], []
 
         try:
             results = self.model(frame, verbose=False)[0]
