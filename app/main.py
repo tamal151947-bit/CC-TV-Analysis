@@ -58,6 +58,7 @@ email_service = EmailAlertService(
 rtsp_manager = RTSPStreamManager(settings.frame_store_dir)
 yolo_service = YOLODetectionService(settings.yolo_model_path)
 db_service = CameraDatabaseService()
+active_camera_captures: dict[str, cv2.VideoCapture] = {}
 
 
 def notify_alert(event) -> None:
@@ -94,6 +95,10 @@ class CameraConnectRequest(BaseModel):
     location: str
     rtsp_url: str
     connection_type: str = "rtsp"
+
+
+class RemoveCameraRequest(BaseModel):
+    password: str
 
 
 class LoginForm(BaseModel):
@@ -360,12 +365,35 @@ async def connect_camera(payload: CameraConnectRequest) -> dict:
     return {"status": "connected", "camera": camera.model_dump()}
 
 
-def generate_camera_frames(rtsp_url: str):
-    source = int(rtsp_url.removeprefix("webcam://")) if rtsp_url.startswith("webcam://") else rtsp_url
-    cap = rtsp_manager.open_stream(source)
+@app.delete("/api/cameras/{camera_id}")
+async def remove_camera(camera_id: str, payload: RemoveCameraRequest, current_username=Depends(get_current_user)) -> dict:
+    if not current_username or not authenticate_user(current_username, payload.password):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+    camera = camera_registry.get_camera(camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    active_capture = active_camera_captures.pop(camera_id, None)
+    if active_capture is not None:
+        active_capture.release()
+    image_paths = db_service.remove_camera(camera_id)
+    camera_registry.remove_camera(camera_id)
+    alert_manager.alerts = [alert for alert in alert_manager.alerts if alert.camera_id != camera_id]
+    frame_store_dir = os.path.abspath(settings.frame_store_dir)
+    for image_path in image_paths:
+        if not image_path:
+            continue
+        absolute_path = os.path.abspath(image_path)
+        if os.path.commonpath([frame_store_dir, absolute_path]) == frame_store_dir and os.path.isfile(absolute_path):
+            os.remove(absolute_path)
+    return {"status": "removed", "camera_id": camera_id}
+
+
+def generate_camera_frames(camera_id: str, rtsp_url: str):
+    cap = rtsp_manager.open_stream(rtsp_url)
     if not cap.isOpened():
         cap.release()
         return
+    active_camera_captures[camera_id] = cap
 
     try:
         while True:
@@ -377,6 +405,7 @@ def generate_camera_frames(rtsp_url: str):
                 continue
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
     finally:
+        active_camera_captures.pop(camera_id, None)
         cap.release()
 
 
@@ -386,7 +415,7 @@ async def camera_video(camera_id: str):
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
     return StreamingResponse(
-        generate_camera_frames(camera.rtsp_url),
+        generate_camera_frames(camera_id, camera.rtsp_url),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 

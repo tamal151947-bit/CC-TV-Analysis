@@ -14,10 +14,15 @@ const cameraUrlEl = document.getElementById('camera-url');
 const connectionHelpEl = document.getElementById('connection-help');
 const alertToastEl = document.getElementById('alert-toast');
 let knownAlertIds = new Set();
+let cameraRefreshVersion = 0;
 
 async function fetchCameras() {
-  const response = await fetch('/api/cameras');
+  const requestVersion = ++cameraRefreshVersion;
+  const response = await fetch('/api/cameras', { cache: 'no-store' });
   const data = await response.json();
+  if (requestVersion !== cameraRefreshVersion) {
+    return;
+  }
   state.cameras = data.cameras || [];
   renderCameras();
   updateHeader();
@@ -77,9 +82,36 @@ function renderCameras() {
       <p>Status: ${camera.status}</p>
       <p>Alert Level: ${camera.alert_level}</p>
       ${camera.status === 'alert' ? '<span class="alert-badge">ALERT</span>' : ''}
+      <button class="remove-camera-btn secondary" data-camera-id="${camera.id}" type="button">Remove camera</button>
     `;
+    card.querySelector('.remove-camera-btn').addEventListener('click', () => removeCamera(camera));
     cameraGridEl.appendChild(card);
   });
+}
+
+async function removeCamera(camera) {
+  if (!window.confirm(`Remove ${camera.name}?`)) {
+    return;
+  }
+  const password = window.prompt('Enter your account password to remove this camera:');
+  if (password === null) {
+    return;
+  }
+  cameraRefreshVersion += 1;
+  const response = await fetch(`/api/cameras/${camera.id}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    window.alert(data.detail || 'Could not remove camera.');
+    return;
+  }
+  state.cameras = state.cameras.filter((item) => item.id !== camera.id);
+  renderCameras();
+  updateHeader();
+  await fetchCameras();
 }
 
 async function connectCamera(event) {

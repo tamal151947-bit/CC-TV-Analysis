@@ -28,6 +28,9 @@ class CameraRegistry:
     def get_camera(self, camera_id: str) -> Camera | None:
         return self.cameras.get(camera_id)
 
+    def remove_camera(self, camera_id: str) -> Camera | None:
+        return self.cameras.pop(camera_id, None)
+
     def set_alert(self, camera_id: str, alert_level: int = 1) -> Camera | None:
         camera = self.cameras.get(camera_id)
         if not camera:

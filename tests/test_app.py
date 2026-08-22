@@ -44,6 +44,26 @@ def test_connect_camera_endpoint():
     assert response.json()["status"] == "connected"
 
 
+def test_remove_camera_endpoint():
+    client.post("/login", data={"username": "admin", "password": "admin123"})
+    response = client.post(
+        "/api/cameras/connect",
+        json={
+            "name": "Removable camera",
+            "location": "Test room",
+            "rtsp_url": "webcam://0",
+            "connection_type": "webcam",
+        },
+    )
+    camera_id = response.json()["camera"]["id"]
+
+    response = client.request("DELETE", f"/api/cameras/{camera_id}", json={"password": "admin123"})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "removed", "camera_id": camera_id}
+    assert client.request("DELETE", f"/api/cameras/{camera_id}", json={"password": "admin123"}).status_code == 404
+
+
 def test_alert_endpoint():
     response = client.post("/api/test-alert")
     assert response.status_code == 200
@@ -51,7 +71,15 @@ def test_alert_endpoint():
 
 
 def test_simulate_activity_endpoint():
-    camera_id = "cam-01"
+    response = client.post(
+        "/api/cameras/connect",
+        json={
+            "name": "Simulation camera",
+            "location": "Test zone",
+            "rtsp_url": "rtsp://camera.example/1",
+        },
+    )
+    camera_id = response.json()["camera"]["id"]
     response = client.post(
         f"/api/cameras/{camera_id}/simulate-activity",
         json={"threat_type": "theft", "confidence": 0.92},

@@ -28,6 +28,17 @@ class CameraDatabaseService:
     def list_cameras(self) -> list[CameraRecord]:
         return self.session.query(CameraRecord).all()
 
+    def remove_camera(self, camera_id: str) -> list[str]:
+        alerts = self.session.query(AlertRecord).filter(AlertRecord.camera_id == camera_id).all()
+        image_paths = [alert.image_path for alert in alerts if alert.image_path]
+        for alert in alerts:
+            self.session.delete(alert)
+        record = self.session.query(CameraRecord).filter(CameraRecord.id == camera_id).first()
+        if record:
+            self.session.delete(record)
+        self.session.commit()
+        return image_paths
+
     def set_camera_alert(self, camera_id: str, alert_level: int, status: CameraStatus) -> None:
         record = self.session.query(CameraRecord).filter(CameraRecord.id == camera_id).first()
         if record:
