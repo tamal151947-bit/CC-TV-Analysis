@@ -13,8 +13,17 @@ class RTSPStreamManager:
         os.makedirs(self.store_dir, exist_ok=True)
 
     def open_stream(self, rtsp_url: str):
-        source = int(rtsp_url.removeprefix("webcam://")) if rtsp_url.startswith("webcam://") else rtsp_url
-        return cv2.VideoCapture(source)
+        if rtsp_url.startswith("webcam://"):
+            source = int(rtsp_url.removeprefix("webcam://"))
+            try:
+                capture = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+                if capture.isOpened():
+                    return capture
+                capture.release()
+            except Exception:
+                pass
+            return cv2.VideoCapture(source)
+        return cv2.VideoCapture(rtsp_url)
 
     def capture_frame(self, rtsp_url: str, output_path: str | None = None) -> str | None:
         cap = self.open_stream(rtsp_url)

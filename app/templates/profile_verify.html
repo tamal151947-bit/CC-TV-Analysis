@@ -12,6 +12,7 @@
       <p class="login-note">Enter your current password to open profile settings.</p>
       {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
       <form method="post" action="/profile/verify">
+        <input type="hidden" name="next_path" value="{{ next_path or '' }}" />
         <label for="password">Current password</label>
         <input id="password" name="password" type="password" required autofocus />
         <button type="submit">Continue</button>

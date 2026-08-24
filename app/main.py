@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import uuid
 import asyncio
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Annotated
 
 import cv2
+import numpy as np
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +41,15 @@ from app.services.detection_service import DetectionService
 from app.services.email_service import EmailAlertService
 from app.services.rtsp_service import RTSPStreamManager
 from app.services.yolo_service import YOLODetectionService
+from app.subscription_service import (
+    check_and_send_expiring_soon_reminders,
+    get_plan_for_camera_count,
+    get_user_subscription,
+    list_subscription_plans,
+    process_subscription_payment,
+    toggle_auto_renew,
+    validate_camera_limit,
+)
 
 settings = get_settings()
 init_db()
@@ -44,6 +57,7 @@ app_session_id = secrets.token_urlsafe(32)
 
 app = FastAPI(title=settings.app_name)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.mount("/qr", StaticFiles(directory=r"C:\Users\tamal\OneDrive\Documents\New folder"), name="qr")
 templates = Jinja2Templates(directory="app/templates")
 
 camera_registry = CameraRegistry()
@@ -60,9 +74,14 @@ rtsp_manager = RTSPStreamManager(settings.frame_store_dir)
 yolo_service = YOLODetectionService(settings.yolo_model_path)
 db_service = CameraDatabaseService()
 active_camera_captures: dict[str, cv2.VideoCapture] = {}
+camera_capture_locks: dict[str, threading.Lock] = {}
+webcam_capture_threads: dict[str, threading.Thread] = {}
+webcam_capture_stops: dict[str, threading.Event] = {}
+latest_webcam_jpegs: dict[str, bytes] = {}
 latest_camera_frames: dict[str, object] = {}
 last_detection_times: dict[tuple[str, ThreatType], float] = {}
 realtime_detection_task: asyncio.Task | None = None
+subscription_reminder_task: asyncio.Task | None = None
 
 
 def notify_alert(event) -> None:
@@ -130,17 +149,29 @@ async def realtime_detection_loop() -> None:
         await asyncio.sleep(settings.detection_interval_seconds)
 
 
+async def subscription_reminder_loop() -> None:
+    while True:
+        try:
+            check_and_send_expiring_soon_reminders()
+        except Exception:
+            pass
+        await asyncio.sleep(3600)
+
+
 @app.on_event("startup")
 async def start_realtime_detection() -> None:
-    global realtime_detection_task
+    global realtime_detection_task, subscription_reminder_task
     if settings.realtime_detection_enabled:
         realtime_detection_task = asyncio.create_task(realtime_detection_loop())
+    subscription_reminder_task = asyncio.create_task(subscription_reminder_loop())
 
 
 @app.on_event("shutdown")
 async def stop_realtime_detection() -> None:
     if realtime_detection_task is not None:
         realtime_detection_task.cancel()
+    if subscription_reminder_task is not None:
+        subscription_reminder_task.cancel()
 
 
 class SimulateAlertRequest(BaseModel):
@@ -327,10 +358,12 @@ async def home(request: Request, user=Depends(get_current_user)) -> HTMLResponse
 
 
 @app.get("/profile", response_class=HTMLResponse)
-async def profile_page(request: Request, username=Depends(get_current_user)) -> HTMLResponse:
+async def profile_page(request: Request, next_path: str = "", username=Depends(get_current_user)) -> HTMLResponse:
     if not username:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("profile_verify.html", {"request": request}, status_code=200)
+    if next_path not in {"", "/profile/upgrade?source=dashboard"}:
+        next_path = ""
+    return templates.TemplateResponse("profile_verify.html", {"request": request, "next_path": next_path}, status_code=200)
 
 
 @app.get("/profile/settings", response_class=HTMLResponse)
@@ -340,24 +373,96 @@ async def profile_settings_page(request: Request, username=Depends(get_current_u
     if request.cookies.get("profile_unlocked") != username:
         return RedirectResponse(url="/profile", status_code=303)
     user = get_user_by_username(username)
-    return templates.TemplateResponse("profile.html", {"request": request, "user": user})
+    subscription = get_user_subscription(username)
+    plans = list_subscription_plans()
+    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "subscription": subscription, "plans": plans})
+
+
+@app.get("/profile/upgrade", response_class=HTMLResponse)
+async def profile_upgrade_page(request: Request, plan_code: str | None = None, source: str | None = None, username=Depends(get_current_user)) -> HTMLResponse:
+    if not username:
+        return RedirectResponse(url="/login", status_code=303)
+    if source != "profile":
+        return RedirectResponse(url="/profile/upgrade-protected", status_code=303)
+    user = get_user_by_username(username)
+    subscription = get_user_subscription(username)
+    plans = list_subscription_plans()
+    selected_plan_code = plan_code or subscription.get("plan_code", "free")
+    if selected_plan_code not in {plan["code"] for plan in plans}:
+        selected_plan_code = "free"
+    return templates.TemplateResponse(
+        "upgrade_plan.html",
+        {"request": request, "user": user, "subscription": subscription, "plans": plans, "selected_plan_code": selected_plan_code},
+    )
+
+
+@app.get("/profile/upgrade-protected")
+async def protected_upgrade_page(username=Depends(get_current_user)) -> RedirectResponse:
+    if not username:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/profile?next_path=/profile/upgrade-direct", status_code=303)
+
+
+@app.get("/profile/upgrade-direct", response_class=HTMLResponse)
+async def profile_upgrade_direct_page(request: Request, plan_code: str | None = None, username=Depends(get_current_user)) -> HTMLResponse:
+    if not username:
+        return RedirectResponse(url="/login", status_code=303)
+    user = get_user_by_username(username)
+    subscription = get_user_subscription(username)
+    plans = list_subscription_plans()
+    selected_plan_code = plan_code or subscription.get("plan_code", "free")
+    if selected_plan_code not in {plan["code"] for plan in plans}:
+        selected_plan_code = "free"
+    return templates.TemplateResponse(
+        "upgrade_plan.html",
+        {"request": request, "user": user, "subscription": subscription, "plans": plans, "selected_plan_code": selected_plan_code},
+    )
+
+
+@app.get("/profile/payment", response_class=HTMLResponse)
+@app.get("/profile/payment/{plan_code}", response_class=HTMLResponse)
+async def payment_page(request: Request, plan_code: str | None = None, username=Depends(get_current_user)) -> HTMLResponse:
+    if not username:
+        return RedirectResponse(url="/login", status_code=303)
+    if request.cookies.get("profile_unlocked") != username:
+        return RedirectResponse(url="/profile", status_code=303)
+
+    if plan_code is None:
+        plan_code = request.query_params.get("plan_code")
+
+    if not plan_code:
+        return RedirectResponse(url="/profile/upgrade", status_code=303)
+
+    plans = list_subscription_plans()
+    plan = next((item for item in plans if item["code"] == plan_code), None)
+    if plan is None:
+        return RedirectResponse(url="/profile/upgrade", status_code=303)
+
+    user = get_user_by_username(username)
+    return templates.TemplateResponse(
+        "payment_method.html",
+        {"request": request, "user": user, "plan": plan},
+    )
 
 
 @app.post("/profile/verify")
 async def verify_profile_access(
     request: Request,
     password: Annotated[str, Form()],
+    next_path: Annotated[str, Form()] = "",
     username=Depends(get_current_user),
 ) -> HTMLResponse:
     if not username:
         return RedirectResponse(url="/login", status_code=303)
+    if next_path not in {"", "/profile/upgrade-direct"}:
+        next_path = ""
     try:
         valid = bool(authenticate_user(username, password))
     except Exception:
-        return templates.TemplateResponse("profile_verify.html", {"request": request, "error": "MongoDB is unavailable. Try again."}, status_code=503)
+        return templates.TemplateResponse("profile_verify.html", {"request": request, "error": "MongoDB is unavailable. Try again.", "next_path": next_path}, status_code=503)
     if not valid:
-        return templates.TemplateResponse("profile_verify.html", {"request": request, "error": "Incorrect password."}, status_code=401)
-    response = RedirectResponse(url="/profile/settings", status_code=303)
+        return templates.TemplateResponse("profile_verify.html", {"request": request, "error": "Incorrect password.", "next_path": next_path}, status_code=401)
+    response = RedirectResponse(url=next_path or "/profile/settings", status_code=303)
     response.set_cookie("profile_unlocked", username, httponly=True, samesite="lax", max_age=900)
     return response
 
@@ -378,8 +483,86 @@ async def update_profile(
         user = update_user(current_username, name.strip(), email.strip().lower(), password)
     except ValueError as error:
         user = get_user_by_username(current_username)
-        return templates.TemplateResponse("profile.html", {"request": request, "user": user, "error": str(error)}, status_code=400)
-    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "message": "Profile updated."})
+        return templates.TemplateResponse("profile.html", {"request": request, "user": user, "subscription": get_user_subscription(current_username), "plans": list_subscription_plans(), "error": str(error)}, status_code=400)
+    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "subscription": get_user_subscription(current_username), "plans": list_subscription_plans(), "message": "Profile updated."})
+
+
+@app.post("/profile/subscription/upgrade", response_class=HTMLResponse)
+async def upgrade_subscription(
+    request: Request,
+    plan_code: Annotated[str, Form()],
+    payment_method: Annotated[str, Form()] = "UPI",
+    auto_renew: Annotated[str, Form()] = "off",
+    card_number: Annotated[str, Form()] = "",
+    card_expiry: Annotated[str, Form()] = "",
+    card_cvv: Annotated[str, Form()] = "",
+    account_number: Annotated[str, Form()] = "",
+    ifsc_code: Annotated[str, Form()] = "",
+    current_username=Depends(get_current_user),
+) -> HTMLResponse:
+    if not current_username:
+        return RedirectResponse(url="/login", status_code=303)
+    if request.cookies.get("profile_unlocked") != current_username:
+        return RedirectResponse(url="/profile", status_code=303)
+    try:
+        payment_method_names = {
+            "upi": "UPI",
+            "card": "Card",
+            "netbanking": "Net banking",
+            "net banking": "Net banking",
+        }
+        normalized_payment_method = payment_method_names.get(payment_method.strip().lower(), "UPI")
+        validation_error = None
+        if normalized_payment_method == "Card":
+            if not re.fullmatch(r"\d{4}\s?\d{4}\s?\d{4}\s?\d{4}", card_number.strip()):
+                validation_error = "Enter a valid 16-digit card number."
+            elif not re.fullmatch(r"(0[1-9]|1[0-2])/\d{2}", card_expiry.strip()):
+                validation_error = "Enter the card expiry in MM/YY format."
+            elif not re.fullmatch(r"\d{3,4}", card_cvv.strip()):
+                validation_error = "Enter a valid 3 or 4 digit CVV."
+        elif normalized_payment_method == "Net banking":
+            if not re.fullmatch(r"\d{9,18}", account_number.strip()):
+                validation_error = "Enter a valid account number."
+            elif not re.fullmatch(r"[A-Za-z]{4}0[A-Za-z0-9]{6}", ifsc_code.strip()):
+                validation_error = "Enter a valid IFSC code."
+        if validation_error:
+            user = get_user_by_username(current_username)
+            return templates.TemplateResponse("payment_method.html", {"request": request, "plan": next((plan for plan in list_subscription_plans() if plan["code"] == plan_code), list_subscription_plans()[0]), "error": validation_error}, status_code=400)
+        payment = process_subscription_payment(
+            current_username,
+            plan_code,
+            auto_renew=(auto_renew.lower() in {"on", "true", "1", "yes"}),
+            payment_method=normalized_payment_method,
+        )
+    except ValueError as error:
+        user = get_user_by_username(current_username)
+        return templates.TemplateResponse("profile.html", {"request": request, "user": user, "subscription": get_user_subscription(current_username), "plans": list_subscription_plans(), "error": str(error)}, status_code=400)
+    user = get_user_by_username(current_username)
+    email_sent = email_service.send_subscription_activation(
+        email=user.get("email", ""),
+        user_name=user.get("name") or user.get("username", current_username),
+        payment=payment,
+        subscription=get_user_subscription(current_username),
+    )
+    confirmation_message = payment["message"]
+    if email_sent:
+        confirmation_message += " Confirmation email sent."
+    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "subscription": get_user_subscription(current_username), "plans": list_subscription_plans(), "message": confirmation_message})
+
+
+@app.post("/profile/subscription/auto-renew", response_class=HTMLResponse)
+async def toggle_subscription_auto_renew(
+    request: Request,
+    enabled: Annotated[str, Form()] = "off",
+    current_username=Depends(get_current_user),
+) -> HTMLResponse:
+    if not current_username:
+        return RedirectResponse(url="/login", status_code=303)
+    if request.cookies.get("profile_unlocked") != current_username:
+        return RedirectResponse(url="/profile", status_code=303)
+    subscription = toggle_auto_renew(current_username, enabled.lower() in {"on", "true", "1", "yes"})
+    user = get_user_by_username(current_username)
+    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "subscription": get_user_subscription(current_username), "plans": list_subscription_plans(), "message": f"Auto-renew set to {'on' if subscription['auto_renew'] else 'off'}."})
 
 
 @app.post("/logout")
@@ -389,8 +572,29 @@ async def logout() -> RedirectResponse:
     return response
 
 
+def enforce_camera_limit_for_user(username: str | None = None) -> None:
+    if not username:
+        return
+    subscription = get_user_subscription(username)
+    allowed_count = 2 if subscription.get("status") == "expired" else int(subscription.get("max_cameras", 2))
+    cameras = camera_registry.list_cameras()
+    for camera in cameras[allowed_count:]:
+        active_capture = active_camera_captures.pop(camera.id, None)
+        if active_capture is not None:
+            active_capture.release()
+        latest_camera_frames.pop(camera.id, None)
+        stop_event = webcam_capture_stops.pop(camera.id, None)
+        if stop_event:
+            stop_event.set()
+        webcam_capture_threads.pop(camera.id, None)
+        latest_webcam_jpegs.pop(camera.id, None)
+        db_service.remove_camera(camera.id)
+        camera_registry.remove_camera(camera.id)
+
+
 @app.get("/api/cameras")
-async def get_cameras() -> dict:
+async def get_cameras(current_username=Depends(get_current_user)) -> dict:
+    enforce_camera_limit_for_user(current_username)
     items = []
     for camera in camera_registry.list_cameras():
         items.append(camera.model_dump())
@@ -398,7 +602,7 @@ async def get_cameras() -> dict:
 
 
 @app.post("/api/cameras/connect")
-async def connect_camera(payload: CameraConnectRequest) -> dict:
+async def connect_camera(payload: CameraConnectRequest, current_username=Depends(get_current_user)) -> dict:
     allowed_types = {"rtsp", "http", "webcam"}
     if payload.connection_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Unsupported camera connection type")
@@ -411,6 +615,13 @@ async def connect_camera(payload: CameraConnectRequest) -> dict:
         raise HTTPException(status_code=400, detail="The camera URL does not match the selected connection type")
     if not payload.name.strip() or not payload.location.strip():
         raise HTTPException(status_code=400, detail="Camera name and location are required")
+
+    enforce_camera_limit_for_user(current_username)
+    current_camera_count = len(camera_registry.list_cameras()) + 1
+    if current_username:
+        validation = validate_camera_limit(current_username, current_camera_count)
+        if not validation["allowed"]:
+            raise HTTPException(status_code=403, detail=validation["message"])
 
     camera_id = f"cam-{uuid.uuid4().hex[:8]}"
     camera = camera_registry.cameras[camera_id] = Camera(
@@ -435,6 +646,12 @@ async def remove_camera(camera_id: str, payload: RemoveCameraRequest, current_us
     if active_capture is not None:
         active_capture.release()
     latest_camera_frames.pop(camera_id, None)
+    camera_capture_locks.pop(camera_id, None)
+    stop_event = webcam_capture_stops.pop(camera_id, None)
+    if stop_event:
+        stop_event.set()
+    webcam_capture_threads.pop(camera_id, None)
+    latest_webcam_jpegs.pop(camera_id, None)
     image_paths = db_service.remove_camera(camera_id)
     camera_registry.remove_camera(camera_id)
     alert_manager.alerts = [alert for alert in alert_manager.alerts if alert.camera_id != camera_id]
@@ -452,6 +669,7 @@ def generate_camera_frames(camera_id: str, rtsp_url: str):
     cap = rtsp_manager.open_stream(rtsp_url)
     if not cap.isOpened():
         cap.release()
+        yield _unavailable_frame()
         return
     active_camera_captures[camera_id] = cap
 
@@ -459,6 +677,7 @@ def generate_camera_frames(camera_id: str, rtsp_url: str):
         while True:
             success, frame = cap.read()
             if not success:
+                yield _unavailable_frame()
                 break
             latest_camera_frames[camera_id] = frame
             success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -471,15 +690,105 @@ def generate_camera_frames(camera_id: str, rtsp_url: str):
         cap.release()
 
 
+def _unavailable_frame():
+    frame = np.full((360, 640, 3), 233, dtype=np.uint8)
+    cv2.putText(frame, "Camera stream unavailable", (145, 175), cv2.FONT_HERSHEY_SIMPLEX, 1, (82, 98, 116), 2, cv2.LINE_AA)
+    cv2.putText(frame, "Check the stream address", (180, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (82, 98, 116), 2, cv2.LINE_AA)
+    success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not success:
+        return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\r\n"
+    return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
+
+
+def _webcam_capture_loop(camera_id: str, rtsp_url: str, stop_event: threading.Event) -> None:
+    capture = None
+    try:
+        while not stop_event.is_set():
+            if capture is None or not capture.isOpened():
+                if capture is not None:
+                    capture.release()
+                capture = rtsp_manager.open_stream(rtsp_url)
+                if not capture.isOpened():
+                    time.sleep(0.5)
+                    continue
+
+            success, frame = capture.read()
+            if not success or frame is None:
+                capture.release()
+                capture = None
+                time.sleep(0.25)
+                continue
+
+            success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if success:
+                latest_webcam_jpegs[camera_id] = encoded.tobytes()
+    finally:
+        if capture is not None:
+            capture.release()
+        webcam_capture_threads.pop(camera_id, None)
+        webcam_capture_stops.pop(camera_id, None)
+
+
+def _start_webcam_capture(camera_id: str, rtsp_url: str) -> None:
+    if camera_id in webcam_capture_threads:
+        return
+    stop_event = threading.Event()
+    capture_thread = threading.Thread(
+        target=_webcam_capture_loop,
+        args=(camera_id, rtsp_url, stop_event),
+        daemon=True,
+    )
+    webcam_capture_stops[camera_id] = stop_event
+    webcam_capture_threads[camera_id] = capture_thread
+    capture_thread.start()
+
+
+def generate_webcam_frames(camera_id: str):
+    while True:
+        jpeg = latest_webcam_jpegs.get(camera_id)
+        if jpeg is None:
+            jpeg = _unavailable_jpeg()
+        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+        time.sleep(0.1)
+
+
 @app.get("/api/cameras/{camera_id}/video")
 async def camera_video(camera_id: str):
     camera = camera_registry.get_camera(camera_id)
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
+    if camera.rtsp_url.startswith("webcam://"):
+        _start_webcam_capture(camera_id, camera.rtsp_url)
+        return StreamingResponse(
+            generate_webcam_frames(camera_id),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
     return StreamingResponse(
         generate_camera_frames(camera_id, camera.rtsp_url),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.get("/api/cameras/{camera_id}/snapshot")
+async def camera_snapshot(camera_id: str):
+    camera = camera_registry.get_camera(camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    _start_webcam_capture(camera_id, camera.rtsp_url)
+
+    jpeg = latest_webcam_jpegs.get(camera_id)
+    if jpeg is None:
+        return Response(content=_unavailable_jpeg(), media_type="image/jpeg")
+    camera.status = CameraStatus.ONLINE
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+def _unavailable_jpeg():
+    frame = np.full((360, 640, 3), 233, dtype=np.uint8)
+    cv2.putText(frame, "Camera stream unavailable", (145, 175), cv2.FONT_HERSHEY_SIMPLEX, 1, (82, 98, 116), 2, cv2.LINE_AA)
+    cv2.putText(frame, "Retrying connection...", (190, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (82, 98, 116), 2, cv2.LINE_AA)
+    success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return encoded.tobytes() if success else b""
 
 
 @app.get("/api/alerts")

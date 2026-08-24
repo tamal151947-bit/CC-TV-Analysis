@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Payment | CCTV AI Guard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="pricing-body">
+    <div class="profile-back-wrap">
+      <a href="/profile/settings" class="profile-back-btn">Go to profile</a>
+    </div>
+
+    <div class="payment-shell">
+      <div class="payment-card plan-{{ plan.code }}">
+        <div class="payment-header">
+          <span class="plan-pill plan-{{ plan.code }}">{{ plan.name }} plan</span>
+          <h2>Complete payment</h2>
+          {% if error %}<p class="form-error payment-error" role="alert">{{ error }}</p>{% endif %}
+        </div>
+
+        <div class="payment-body">
+          <div class="payment-summary">
+            <div>
+              <small>Selected plan</small>
+              <strong>{{ plan.name }}</strong>
+            </div>
+            <div>
+              <small>Amount</small>
+              <strong>₹{{ plan.price_inr }}</strong>
+            </div>
+          </div>
+
+          <div class="checkout-timer-row">
+            <span class="timer-label">Session expires in</span>
+            <span class="timer-pill" id="payment-timer">04:59</span>
+          </div>
+
+          <div class="payment-method-tabs" aria-label="Payment methods">
+            <button type="button" class="method-tab active" data-method="upi">UPI</button>
+            <button type="button" class="method-tab" data-method="card">Card</button>
+            <button type="button" class="method-tab" data-method="netbanking">Net banking</button>
+          </div>
+
+          <div class="payment-panel active" data-panel="upi">
+            <div class="payment-qr">
+              <img src="/qr/QR.jpeg" alt="UPI QR code" class="qr-image" />
+            </div>
+            <div class="payment-upi">
+              <span>UPI ID</span>
+              <strong>tamalkar92-3@oksbi</strong>
+            </div>
+          </div>
+
+          <div class="payment-panel" data-panel="card">
+            <div class="card-form-row">
+              <label for="card-number">Card number <span class="required-mark">*</span></label>
+              <input id="card-number" name="card_number" type="text" form="payment-confirm-form" placeholder="Enter card number" inputmode="numeric" autocomplete="cc-number" pattern="[0-9]{4}[ ]?[0-9]{4}[ ]?[0-9]{4}[ ]?[0-9]{4}" title="Enter a valid 16-digit card number" />
+            </div>
+            <div class="card-form-grid">
+              <div class="card-form-row">
+                <label for="card-expiry">Expiry <span class="required-mark">*</span></label>
+                <input id="card-expiry" name="card_expiry" type="text" form="payment-confirm-form" placeholder="MM/YY" inputmode="numeric" autocomplete="cc-exp" pattern="(0[1-9]|1[0-2])/[0-9]{2}" title="Use MM/YY format" />
+              </div>
+              <div class="card-form-row">
+                <label for="card-cvv">CVV <span class="required-mark">*</span></label>
+                <input id="card-cvv" name="card_cvv" type="password" form="payment-confirm-form" placeholder="Enter CVV" inputmode="numeric" autocomplete="cc-csc" pattern="[0-9]{3,4}" title="Enter a 3 or 4 digit CVV" />
+              </div>
+            </div>
+          </div>
+
+          <div class="payment-panel" data-panel="netbanking">
+            <div class="bank-list">
+              <button type="button" class="bank-option active" data-bank="HDFC">HDFC</button>
+              <button type="button" class="bank-option" data-bank="ICICI">ICICI</button>
+              <button type="button" class="bank-option" data-bank="SBI">SBI</button>
+              <button type="button" class="bank-option" data-bank="Axis">Axis</button>
+            </div>
+            <div class="selected-bank-box">
+              <span>Selected bank</span>
+              <strong id="selected-bank-label">HDFC</strong>
+            </div>
+            <div class="card-form-row account-field-wrap">
+              <label for="account-number">Account number <span class="required-mark">*</span></label>
+              <input id="account-number" name="account_number" type="text" form="payment-confirm-form" placeholder="Enter account number" inputmode="numeric" pattern="[0-9]{9,18}" title="Enter a valid account number" />
+            </div>
+            <div class="card-form-row">
+              <label for="ifsc-code">IFSC code <span class="required-mark">*</span></label>
+              <input id="ifsc-code" name="ifsc_code" type="text" form="payment-confirm-form" placeholder="Enter IFSC code" pattern="[A-Za-z]{4}0[A-Za-z0-9]{6}" title="Use a valid IFSC code, for example SBIN0001234" />
+            </div>
+            <input type="hidden" name="selected_bank" id="selected-bank" value="HDFC" />
+          </div>
+
+          <p class="demo-payment-note">Demo mode: no real money is charged in this local setup.</p>
+
+          <form id="payment-confirm-form" method="post" action="/profile/subscription/upgrade">
+            <input type="hidden" name="plan_code" value="{{ plan.code }}" />
+            <input type="hidden" name="payment_method" id="payment-method" value="UPI" />
+            <button type="submit" class="payment-confirm-btn">I have paid</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const timerEl = document.getElementById('payment-timer');
+      let totalSeconds = 5 * 60;
+
+      const tick = () => {
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        totalSeconds -= 1;
+        if (totalSeconds < 0) {
+          totalSeconds = 5 * 60;
+        }
+      };
+
+      tick();
+      setInterval(tick, 1000);
+
+      const tabs = document.querySelectorAll('.method-tab');
+      const panels = document.querySelectorAll('.payment-panel');
+      const paymentMethodInput = document.getElementById('payment-method');
+      const paymentMethodNames = {
+        upi: 'UPI',
+        card: 'Card',
+        netbanking: 'Net banking'
+      };
+      const requiredFieldsByMethod = {
+        upi: [],
+        card: ['card-number', 'card-expiry', 'card-cvv'],
+        netbanking: ['account-number', 'ifsc-code']
+      };
+      const paymentFieldIds = Object.values(requiredFieldsByMethod).flat();
+
+      const updatePaymentRequirements = (method) => {
+        paymentFieldIds.forEach((fieldId) => {
+          const field = document.getElementById(fieldId);
+          field.required = requiredFieldsByMethod[method].includes(fieldId);
+        });
+      };
+
+      updatePaymentRequirements('upi');
+
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          tabs.forEach((item) => item.classList.toggle('active', item === tab));
+          panels.forEach((panel) => {
+            panel.classList.toggle('active', panel.dataset.panel === tab.dataset.method);
+          });
+          paymentMethodInput.value = paymentMethodNames[tab.dataset.method];
+          updatePaymentRequirements(tab.dataset.method);
+        });
+      });
+
+      const bankButtons = document.querySelectorAll('.bank-option');
+      const selectedBankInput = document.getElementById('selected-bank');
+      const selectedBankLabel = document.getElementById('selected-bank-label');
+
+      bankButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          bankButtons.forEach((item) => item.classList.toggle('active', item === button));
+          selectedBankInput.value = button.dataset.bank;
+          selectedBankLabel.textContent = button.dataset.bank;
+        });
+      });
+    </script>
+  </body>
+</html>

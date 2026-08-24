@@ -48,16 +48,18 @@
           </label>
           <label>Camera stream address <input name="rtsp_url" id="camera-url" placeholder="rtsp://user:password@192.168.1.50:554/stream1" required /></label>
           <p class="connect-help" id="connection-help">Example: rtsp://admin:password@192.168.1.50:554/stream1</p>
-          <button type="submit">Connect camera</button>
+          <button type="submit" id="connect-camera-btn">Connect camera</button>
+          <a href="/profile/upgrade-direct" id="upgrade-plan-btn" class="upgrade-plan-btn" hidden>Upgrade plan</a>
           <p id="connect-message" role="status"></p>
         </form>
       </aside>
 
       <main class="main-panel">
-        <header>
+        <header class="dashboard-header">
           <div>
-            <p class="eyebrow">Monitoring live</p>
+            <p class="eyebrow is-offline" id="monitoring-status-label"><span class="live-status-dot is-offline" id="monitoring-status-dot" aria-hidden="true"></span><span id="monitoring-status">Monitoring off</span></p>
             <h2>Live camera overview</h2>
+            <p class="header-subtitle">Real-time visibility across your connected security cameras</p>
           </div>
           <a class="profile-button" href="/profile" title="Open profile" aria-label="Open profile">&#128100;</a>
         </header>
@@ -72,6 +74,6 @@
     </div>
     <div id="alert-toast" class="alert-toast" role="alert" aria-live="assertive"></div>
 
-    <script src="/static/app.js?v=2"></script>
+    <script src="/static/app.js?v=11"></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.subscription_service import get_plan_for_camera_count, process_subscription_payment
 
 client = TestClient(app)
 
@@ -86,3 +87,20 @@ def test_simulate_activity_endpoint():
     )
     assert response.status_code == 200
     assert response.json()["status"] == "alert_created"
+
+
+def test_plan_pricing_and_validity():
+    free_plan = get_plan_for_camera_count(2)
+    starter_plan = get_plan_for_camera_count(3)
+    pro_plan = get_plan_for_camera_count(8)
+    enterprise_plan = get_plan_for_camera_count(12)
+
+    assert free_plan["code"] == "free"
+    assert starter_plan["price_inr"] == 1
+    assert pro_plan["price_inr"] == 299
+    assert enterprise_plan["price_inr"] == 499
+
+    payment = process_subscription_payment("demo-user", "pro", auto_renew=True, payment_method="UPI")
+    assert payment["status"] == "paid"
+    assert payment["expires_in_days"] == 30
+    assert payment["auto_renew"] is True

@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     frame_store_dir: str = "./captured_frames"
     default_admin_username: str = "admin"
     default_admin_password: str = "admin123"
+    payment_gateway_provider: str = "demo"
+    # Demo-safe local mode: no real money is charged unless a live gateway is configured.
+    razorpay_key_id: str = "rzp_test_placeholder"
+    razorpay_key_secret: str = "your-razorpay-secret"
+    stripe_secret_key: str = "sk_test_placeholder"
 
     model_config = SettingsConfigDict(
         env_file=".env",

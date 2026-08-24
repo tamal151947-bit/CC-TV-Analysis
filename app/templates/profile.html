@@ -22,8 +22,30 @@
         <input id="password" name="password" type="password" minlength="8" placeholder="Leave blank to keep current" />
         <button type="submit">Save profile</button>
       </form>
+
+      <div class="subscription-panel">
+        <a class="simple-upgrade-button" href="/profile/upgrade-direct">
+          <span>Subscription {{ subscription.plan_name }}</span>
+          <span class="upgrade-inline-text">/ Upgrade</span>
+        </a>
+      </div>
+
       <p class="login-note"><a href="/">Back to dashboard</a></p>
       <form method="post" action="/logout"><button class="secondary" type="submit">Log out</button></form>
     </div>
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        const notices = document.querySelectorAll('.form-success, .form-error');
+        if (!notices.length) return;
+
+        window.setTimeout(() => {
+          notices.forEach((notice) => {
+            notice.style.transition = 'opacity 0.4s ease';
+            notice.style.opacity = '0';
+            window.setTimeout(() => notice.remove(), 450);
+          });
+        }, 2500);
+      });
+    </script>
   </body>
 </html>

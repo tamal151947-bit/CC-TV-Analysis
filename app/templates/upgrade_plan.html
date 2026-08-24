@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Choose a plan | CCTV AI Guard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="pricing-body">
+    <div class="profile-back-wrap">
+      <a href="/profile/settings" class="profile-back-btn">Go to profile</a>
+    </div>
+    <div class="pricing-wrap">
+      <div class="pricing-grid">
+        {% for plan in plans %}
+          <div class="pricing-card plan-{{ plan.code }} {% if plan.code == selected_plan_code %}is-current{% endif %}">
+            <div class="pricing-header">
+              <div class="plan-name-row">
+                {% if plan.code == selected_plan_code %}
+                  <span class="plan-name">{{ plan.name }}</span>
+                  <span class="plan-badge">Current plan</span>
+                {% else %}
+                  <span class="plan-name">{{ plan.name }}</span>
+                {% endif %}
+              </div>
+
+              <div class="plan-copy">
+                {% if plan.code == 'free' %}
+                  Try CCTV AI Guard
+                {% elif plan.code == 'silver' %}
+                  Smart monitoring
+                {% elif plan.code == 'gold' %}
+                  Best value
+                {% else %}
+                  Maximum power
+                {% endif %}
+              </div>
+
+              <div class="price-row">
+                <span class="currency">₹</span>
+                <span class="amount">{{ plan.price_inr }}</span>
+                <span class="month">/ month</span>
+              </div>
+
+              {% if plan.code == 'free' %}
+                <button type="button" class="current-button">Free</button>
+              {% elif plan.code != selected_plan_code %}
+                <a class="upgrade-link" href="/profile/payment?plan_code={{ plan.code }}">Upgrade</a>
+              {% else %}
+                <button type="button" class="current-button">Current plan</button>
+              {% endif %}
+            </div>
+
+            <div class="plan-feature-list">
+              {% for feature in plan.features %}
+                <div>{{ feature }}</div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </body>
+</html>
