@@ -7,6 +7,7 @@ import uuid
 import asyncio
 import threading
 import time
+import logging
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
@@ -91,6 +92,7 @@ latest_camera_frames: dict[str, object] = {}
 last_detection_times: dict[tuple[str, ThreatType], float] = {}
 person_match_service = PersonMatchService()
 last_person_match_times: dict[str, float] = {}
+last_frame_failure_logs: dict[str, float] = {}
 realtime_detection_task: asyncio.Task | None = None
 subscription_reminder_task: asyncio.Task | None = None
 alert_report_task: asyncio.Task | None = None
@@ -178,7 +180,18 @@ async def realtime_detection_loop() -> None:
             if frame is None:
                 frame = await asyncio.to_thread(rtsp_manager.get_latest_frame, camera.rtsp_url)
             if frame is None:
+                camera.status = CameraStatus.OFFLINE
+                now = asyncio.get_running_loop().time()
+                if now - last_frame_failure_logs.get(camera.id, 0.0) >= 15:
+                    logging.getLogger(__name__).warning(
+                        "No camera frame available for %s (%s); YOLO detection skipped.",
+                        camera.name,
+                        camera.rtsp_url,
+                    )
+                    last_frame_failure_logs[camera.id] = now
                 continue
+            if camera.status == CameraStatus.OFFLINE:
+                camera.status = CameraStatus.ONLINE
             person_crops = await asyncio.to_thread(yolo_service.detect_person_crops, frame)
             person_detected = person_match_service.matches_person_crops(person_crops) if person_crops else person_match_service.matches(frame)
             if person_detected:

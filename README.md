@@ -81,3 +81,5 @@ Alert reports use the email address on the signed-in user's profile. Configure `
 Each MongoDB alert document includes `alert_id`, `camera_id`, `camera_name`, `camera_location`, `threat_type`, `severity`, `message`, `timestamp`, and `image_path`.
 
 The bundled `yolov8n.pt` model detects general objects. It maps `person` or `intruder` to possible home intrusion. Accurate theft, robbery, stealing, fight, violence, and harassment detection requires a custom YOLO model trained with labels such as `theft`, `robbery`, `fight`, `violence`, or `harassment`; set its path with `YOLO_MODEL_PATH`. A general object model must not be treated as reliable proof of those behaviors.
+
+The default detector path is `best_detector.pt`. The additional fight detector is configured as `fight.pt.zip` through `YOLO_ADDITIONAL_MODEL_PATHS`; the application loads both models and combines their detections. You can override either path in `.env`.

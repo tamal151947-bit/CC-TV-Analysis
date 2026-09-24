@@ -5,3 +5,5 @@ __pycache__/
 *.db
 captured_frames/*
 *.zip
+best_detector.pt
+fight.pt

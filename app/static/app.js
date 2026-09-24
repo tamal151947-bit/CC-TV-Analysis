@@ -194,7 +194,7 @@ async function startWebcamPreview(video, cameraId) {
     webcamMediaStreams.delete(cameraId);
   }
   if (!navigator.mediaDevices?.getUserMedia) {
-    video.replaceWith(createUnavailableFeed('Browser webcam access is unavailable.'));
+    video.replaceWith(createServerWebcamFeed(cameraId));
     return;
   }
   try {
@@ -214,8 +214,20 @@ async function startWebcamPreview(video, cameraId) {
       });
     });
   } catch (error) {
-    video.replaceWith(createUnavailableFeed('Allow camera access in the browser to view this webcam.'));
+    video.replaceWith(createServerWebcamFeed(cameraId));
   }
+}
+
+function createServerWebcamFeed(cameraId) {
+  const feed = document.createElement('img');
+  feed.className = 'camera-feed webcam-server-preview';
+  feed.src = `/api/cameras/${cameraId}/video`;
+  feed.alt = 'Live webcam feed';
+  feed.loading = 'eager';
+  feed.addEventListener('error', () => {
+    feed.replaceWith(createUnavailableFeed('Webcam unavailable. Check that the camera is connected.'));
+  });
+  return feed;
 }
 
 function createUnavailableFeed(message) {
@@ -492,26 +504,12 @@ async function stopPersonMonitor() {
   renderReferenceImages();
 }
 
-async function simulateAlert() {
-  const camera = state.cameras[Math.floor(Math.random() * state.cameras.length)];
-  const types = ['theft', 'intrusion', 'violence', 'missing_object', 'suspicious_activity'];
-  const type = types[Math.floor(Math.random() * types.length)];
-  await fetch(`/api/cameras/${camera.id}/simulate-activity`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ threat_type: type })
-  });
-  await fetchCameras();
-  await fetchAlerts();
-}
-
 async function clearAlerts() {
   await fetch('/api/alerts/clear', { method: 'POST' });
   await fetchCameras();
   await fetchAlerts();
 }
 
-document.getElementById('simulate-alert-btn').addEventListener('click', simulateAlert);
 document.getElementById('clear-alerts-btn').addEventListener('click', clearAlerts);
 connectFormEl.addEventListener('submit', connectCamera);
 personMonitorFormEl.addEventListener('submit', startPersonMonitor);

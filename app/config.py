@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     mongodb_url: str = "mongodb://localhost:27017"
     mongodb_database: str = "cctv_guard"
     secret_key: str = "change-this-secret-key"
-    yolo_model_path: str = "yolov8n.pt"
+    yolo_model_path: str = "best_detector.pt"
+    yolo_additional_model_paths: str = "fight.pt.zip"
     realtime_detection_enabled: bool = True
     detection_interval_seconds: float = 1.0
     detection_cooldown_seconds: float = 15.0
