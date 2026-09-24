@@ -14,6 +14,10 @@ This project is a starter for a real-time CCTV monitoring system that can evalua
 - Camera state tracking with red alert mode
 - Popup-style alert events in the dashboard
 - Alert email service using Gmail SMTP settings
+- Persistent alert history in SQLite with UTC timestamps
+- MongoDB-backed alert history in the `alerts` collection
+- Excel alert reports downloadable or emailed for a selected date range
+- Automatic Excel report emails with configurable intervals from 1 hour to 7 days
 - FastAPI backend with a simple HTML dashboard
 - MongoDB-backed user registration and profiles
 - Email verification before first login
@@ -62,11 +66,18 @@ After login, open `/profile` to update name, email, or password. Passwords are h
 - GET /
 - GET /api/cameras
 - GET /api/alerts
+- GET /api/alerts/export?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+- POST /api/alerts/report-email
+- GET, POST, DELETE /api/alerts/report-schedule
 - POST /api/test-alert
 - POST /api/cameras/{camera_id}/simulate-activity
 
 ## Notes
 
 Real-time detection runs once per second by default. Configure it in `.env` with `REALTIME_DETECTION_ENABLED`, `DETECTION_INTERVAL_SECONDS`, and `DETECTION_COOLDOWN_SECONDS`.
+
+Alert reports use the email address on the signed-in user's profile. Configure `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_HOST`, and `SMTP_PORT` in `.env`; Gmail requires an app password. Automatic reports are sent by the FastAPI background task while the server is running. Alert documents are stored in MongoDB database `cctv_guard`, collection `alerts`. User accounts are stored in the `users` collection. SQLite remains a local fallback when MongoDB is unavailable.
+
+Each MongoDB alert document includes `alert_id`, `camera_id`, `camera_name`, `camera_location`, `threat_type`, `severity`, `message`, `timestamp`, and `image_path`.
 
 The bundled `yolov8n.pt` model detects general objects. It maps `person` or `intruder` to possible home intrusion. Accurate theft, robbery, stealing, fight, violence, and harassment detection requires a custom YOLO model trained with labels such as `theft`, `robbery`, `fight`, `violence`, or `harassment`; set its path with `YOLO_MODEL_PATH`. A general object model must not be treated as reliable proof of those behaviors.

@@ -7,22 +7,24 @@ import uuid
 import asyncio
 import threading
 import time
-from datetime import datetime, timezone
+from pathlib import Path
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
 import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
 from app.config import get_settings
 from app.database import init_db
-from app.models import Camera, CameraStatus, ThreatType
+from app.models import AlertEvent, Camera, CameraStatus, ThreatType
 from app.services.alert_service import AlertManager
+from app.services.alert_report_service import AlertReportService, date_range, utc_now
 from app.services.auth_service import (
     authenticate_user,
     create_pending_user,
@@ -39,6 +41,7 @@ from app.services.camera_service import CameraRegistry
 from app.services.database_service import CameraDatabaseService
 from app.services.detection_service import DetectionService
 from app.services.email_service import EmailAlertService
+from app.services.person_match_service import PersonMatchService
 from app.services.rtsp_service import RTSPStreamManager
 from app.services.yolo_service import YOLODetectionService
 from app.subscription_service import (
@@ -57,8 +60,14 @@ app_session_id = secrets.token_urlsafe(32)
 
 app = FastAPI(title=settings.app_name)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
-app.mount("/qr", StaticFiles(directory=r"C:\Users\tamal\OneDrive\Documents\New folder"), name="qr")
 templates = Jinja2Templates(directory="app/templates")
+
+QR_IMAGE_PATH = Path(__file__).resolve().parent.parent / "QR.jpeg"
+
+
+@app.get("/qr/QR.jpeg")
+def qr_code() -> FileResponse:
+    return FileResponse(QR_IMAGE_PATH, media_type="image/jpeg")
 
 camera_registry = CameraRegistry()
 detection_service = DetectionService(camera_registry)
@@ -80,8 +89,12 @@ webcam_capture_stops: dict[str, threading.Event] = {}
 latest_webcam_jpegs: dict[str, bytes] = {}
 latest_camera_frames: dict[str, object] = {}
 last_detection_times: dict[tuple[str, ThreatType], float] = {}
+person_match_service = PersonMatchService()
+last_person_match_times: dict[str, float] = {}
 realtime_detection_task: asyncio.Task | None = None
 subscription_reminder_task: asyncio.Task | None = None
+alert_report_task: asyncio.Task | None = None
+alert_report_service = AlertReportService()
 
 
 def notify_alert(event) -> None:
@@ -124,20 +137,55 @@ def create_detection_alert(camera_id: str, threat: ThreatType, confidence: float
         alert.severity,
         alert.message,
         alert.image_path,
+        camera.location if (camera := camera_registry.get_camera(camera_id)) else None,
     )
     db_service.set_camera_alert(camera_id, alert.severity, CameraStatus.ALERT)
     notify_alert(alert)
     return alert.model_dump()
 
 
+def create_person_match_alert(camera: Camera, frame) -> dict:
+    timestamp = datetime.now(timezone.utc)
+    detection_time = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+    frame_path = os.path.join(settings.frame_store_dir, f"person_match_{camera.id}_{int(timestamp.timestamp() * 1000)}.jpg")
+    yolo_service.save_debug_frame(frame, frame_path)
+    event = AlertEvent(
+        id=f"person-{timestamp.strftime('%Y%m%d%H%M%S%f')}",
+        camera_id=camera.id,
+        camera_name=camera.name,
+        threat_type=ThreatType.PERSON_MATCH,
+        severity=10,
+        message=f"Tracked person detected on {camera.name} at {detection_time}.",
+        timestamp=timestamp,
+        image_path=frame_path,
+    )
+    alert_manager.add_alert(event)
+    db_service.add_alert(event.id, event.camera_id, event.camera_name, event.threat_type.value, event.severity, event.message, event.image_path, camera.location)
+    camera_registry.set_alert(camera.id, event.severity)
+    db_service.set_camera_alert(camera.id, event.severity, CameraStatus.ALERT)
+    notify_alert(event)
+    return event.model_dump()
+
+
 async def realtime_detection_loop() -> None:
     while True:
         for camera in camera_registry.list_cameras():
             frame = latest_camera_frames.get(camera.id)
+            if frame is None and camera.rtsp_url.startswith("webcam://"):
+                webcam_jpeg = latest_webcam_jpegs.get(camera.id)
+                if webcam_jpeg:
+                    frame = cv2.imdecode(np.frombuffer(webcam_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 frame = await asyncio.to_thread(rtsp_manager.get_latest_frame, camera.rtsp_url)
             if frame is None:
                 continue
+            person_crops = await asyncio.to_thread(yolo_service.detect_person_crops, frame)
+            person_detected = person_match_service.matches_person_crops(person_crops) if person_crops else person_match_service.matches(frame)
+            if person_detected:
+                now = asyncio.get_running_loop().time()
+                if now - last_person_match_times.get(camera.id, 0.0) >= settings.detection_cooldown_seconds:
+                    last_person_match_times[camera.id] = now
+                    create_person_match_alert(camera, frame)
             threats, _ = await asyncio.to_thread(yolo_service.detect_threats, frame)
             now = asyncio.get_running_loop().time()
             for threat, confidence in threats:
@@ -158,12 +206,37 @@ async def subscription_reminder_loop() -> None:
         await asyncio.sleep(3600)
 
 
+async def alert_report_loop() -> None:
+    while True:
+        try:
+            now = utc_now()
+            for schedule in alert_report_service.due_schedules(now):
+                end_at = now
+                start_at = now - timedelta(hours=schedule.interval_hours)
+                workbook = await asyncio.to_thread(alert_report_service.build_workbook, start_at, end_at)
+                sent = await asyncio.to_thread(
+                    email_service.send_attachment,
+                    "CCTV AI Guard alert report",
+                    f"Attached are the alerts from {start_at.isoformat()} to {end_at.isoformat()}.",
+                    workbook,
+                    f"alert-report-{now.strftime('%Y%m%d-%H%M')}.xlsx",
+                    schedule.recipient_email,
+                )
+                if sent:
+                    next_run = now + timedelta(hours=schedule.interval_hours)
+                    alert_report_service.mark_sent(schedule.id, now, next_run)
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def start_realtime_detection() -> None:
-    global realtime_detection_task, subscription_reminder_task
+    global realtime_detection_task, subscription_reminder_task, alert_report_task
     if settings.realtime_detection_enabled:
         realtime_detection_task = asyncio.create_task(realtime_detection_loop())
     subscription_reminder_task = asyncio.create_task(subscription_reminder_loop())
+    alert_report_task = asyncio.create_task(alert_report_loop())
 
 
 @app.on_event("shutdown")
@@ -172,6 +245,8 @@ async def stop_realtime_detection() -> None:
         realtime_detection_task.cancel()
     if subscription_reminder_task is not None:
         subscription_reminder_task.cancel()
+    if alert_report_task is not None:
+        alert_report_task.cancel()
 
 
 class SimulateAlertRequest(BaseModel):
@@ -194,6 +269,16 @@ class RemoveCameraRequest(BaseModel):
 class LoginForm(BaseModel):
     username: str
     password: str
+
+
+class AlertReportRange(BaseModel):
+    start_date: date
+    end_date: date
+
+
+class AlertReportScheduleRequest(BaseModel):
+    interval_hours: int = Field(default=24, ge=1, le=168)
+    email: str | None = None
 
 
 async def get_current_user(request: Request):
@@ -793,7 +878,166 @@ def _unavailable_jpeg():
 
 @app.get("/api/alerts")
 async def get_alerts() -> dict:
-    return {"alerts": [alert.model_dump() for alert in alert_manager.get_latest_alerts(20)]}
+    connected_camera_ids = {camera.id for camera in camera_registry.list_cameras()}
+    alerts = [
+        alert for alert in db_service.list_alerts()
+        if alert.camera_id in connected_camera_ids
+    ][:10]
+    return {
+        "alerts": [
+            {
+                "id": alert.id,
+                "camera_id": alert.camera_id,
+                "camera_name": alert.camera_name,
+                "threat_type": alert.threat_type,
+                "severity": alert.severity,
+                "message": alert.message,
+                "timestamp": (alert.timestamp.replace(tzinfo=timezone.utc) if alert.timestamp.tzinfo is None else alert.timestamp).isoformat(),
+                "image_path": alert.image_path,
+            }
+            for alert in alerts
+        ],
+    }
+
+
+def _report_email_for_user(username: str, requested_email: str | None = None) -> str:
+    user = get_user_by_username(username)
+    email = (requested_email or (user or {}).get("email") or settings.alert_email_to).strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Add a valid email address to your profile before sending reports.")
+    return email
+
+
+@app.get("/api/alerts/export")
+async def export_alert_report(
+    start_date: date,
+    end_date: date,
+    current_username=Depends(get_current_user),
+) -> StreamingResponse:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to download alert reports.")
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="End date must be on or after the start date.")
+    start_at, end_at = date_range(start_date, end_date)
+    workbook = await asyncio.to_thread(alert_report_service.build_workbook, start_at, end_at)
+    filename = f"alert-report-{start_date.isoformat()}-to-{end_date.isoformat()}.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/alerts/report-email")
+async def email_alert_report(payload: AlertReportRange, current_username=Depends(get_current_user)) -> dict:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to email alert reports.")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="End date must be on or after the start date.")
+    recipient = _report_email_for_user(current_username)
+    start_at, end_at = date_range(payload.start_date, payload.end_date)
+    workbook = await asyncio.to_thread(alert_report_service.build_workbook, start_at, end_at)
+    sent = await asyncio.to_thread(
+        email_service.send_attachment,
+        "CCTV AI Guard alert report",
+        f"Attached are the alerts from {payload.start_date.isoformat()} to {payload.end_date.isoformat()}.",
+        workbook,
+        f"alert-report-{payload.start_date.isoformat()}-to-{payload.end_date.isoformat()}.xlsx",
+        recipient,
+    )
+    if not sent:
+        raise HTTPException(status_code=502, detail="The report could not be emailed. Check the SMTP settings.")
+    return {"status": "sent", "email": recipient}
+
+
+@app.get("/api/alerts/report-schedule")
+async def get_alert_report_schedule(current_username=Depends(get_current_user)) -> dict:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to view report scheduling.")
+    schedule = alert_report_service.get_schedule(current_username)
+    if schedule is None:
+        return {"schedule": None}
+    return {
+        "schedule": {
+            "enabled": bool(schedule.enabled),
+            "interval_hours": schedule.interval_hours,
+            "email": schedule.recipient_email,
+            "next_run_at": schedule.next_run_at.isoformat(),
+            "last_sent_at": schedule.last_sent_at.isoformat() if schedule.last_sent_at else None,
+        }
+    }
+
+
+@app.post("/api/alerts/report-schedule")
+async def save_alert_report_schedule(
+    payload: AlertReportScheduleRequest,
+    current_username=Depends(get_current_user),
+) -> dict:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to schedule alert reports.")
+    recipient = _report_email_for_user(current_username, payload.email)
+    schedule = alert_report_service.save_schedule(current_username, recipient, payload.interval_hours)
+    return {
+        "status": "scheduled",
+        "schedule": {
+            "enabled": True,
+            "interval_hours": schedule.interval_hours,
+            "email": schedule.recipient_email,
+            "next_run_at": schedule.next_run_at.isoformat(),
+        },
+    }
+
+
+@app.delete("/api/alerts/report-schedule")
+async def disable_alert_report_schedule(current_username=Depends(get_current_user)) -> dict:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to manage report scheduling.")
+    alert_report_service.disable_schedule(current_username)
+    return {"status": "disabled"}
+
+
+@app.post("/api/person-monitor")
+async def configure_person_monitor(
+    name: Annotated[str, Form()] = "Tracked person",
+    images: list[UploadFile] = File(...),
+    current_username=Depends(get_current_user),
+) -> dict:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to configure person monitoring.")
+    if not images or len(images) > 5:
+        raise HTTPException(status_code=400, detail="Upload between 1 and 5 reference pictures.")
+    os.makedirs(settings.frame_store_dir, exist_ok=True)
+    reference_paths = []
+    for index, image in enumerate(images):
+        if not image.content_type or not image.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Every reference file must be an image.")
+        image_bytes = await image.read()
+        if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Each reference image must be smaller than 10 MB.")
+        if len(image_bytes) < 100:
+            raise HTTPException(status_code=400, detail="One selected image is empty or invalid.")
+        reference_path = os.path.join(settings.frame_store_dir, f"person_reference_{index}.jpg")
+        with open(reference_path, "wb") as reference_file:
+            reference_file.write(image_bytes)
+        reference_paths.append(reference_path)
+    try:
+        person_match_service.set_references(name, reference_paths)
+    except ValueError as error:
+        for reference_path in reference_paths:
+            if os.path.exists(reference_path):
+                os.remove(reference_path)
+        raise HTTPException(status_code=400, detail=str(error))
+    last_person_match_times.clear()
+    return {"status": "monitoring", "name": person_match_service.reference_name, "pictures": len(reference_paths)}
+
+
+@app.delete("/api/person-monitor")
+async def clear_person_monitor(current_username=Depends(get_current_user)) -> dict:
+    if not current_username:
+        raise HTTPException(status_code=401, detail="Please sign in to stop person monitoring.")
+    person_match_service.clear_reference()
+    last_person_match_times.clear()
+    return {"status": "stopped"}
 
 
 @app.post("/api/cameras/{camera_id}/simulate-activity")
@@ -818,7 +1062,7 @@ async def simulate_activity(camera_id: str, payload: SimulateAlertRequest) -> di
     )
     event = detection_service.create_alert_event(result)
     alert_manager.add_alert(event)
-    db_service.add_alert(event.id, event.camera_id, event.camera_name, event.threat_type.value, event.severity, event.message, event.image_path)
+    db_service.add_alert(event.id, event.camera_id, event.camera_name, event.threat_type.value, event.severity, event.message, event.image_path, camera.location if (camera := camera_registry.get_camera(camera_id)) else None)
     db_service.set_camera_alert(camera_id, event.severity, CameraStatus.ALERT)
 
     notify_alert(event)
@@ -836,7 +1080,7 @@ async def test_alert() -> dict:
     )
     event = detection_service.create_alert_event(detection)
     alert_manager.add_alert(event)
-    db_service.add_alert(event.id, event.camera_id, event.camera_name, event.threat_type.value, event.severity, event.message, event.image_path)
+    db_service.add_alert(event.id, event.camera_id, event.camera_name, event.threat_type.value, event.severity, event.message, event.image_path, camera.location)
     db_service.set_camera_alert(camera.id, event.severity, CameraStatus.ALERT)
     notify_alert(event)
     return {"status": "ok", "alert": event.model_dump()}

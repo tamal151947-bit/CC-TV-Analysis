@@ -4,21 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Profile | CCTV AI Guard</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=16" />
   </head>
-  <body class="login-body">
-    <div class="login-box">
+  <body class="login-body profile-page">
+    <div class="login-box profile-card">
       <h2>Your profile</h2>
       {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
       {% if message %}<p class="form-success">{{ message }}</p>{% endif %}
       <form method="post" action="/profile/settings">
-        <label for="username">Username</label>
+        <label for="username"><span aria-hidden="true">&#128100;</span> Username</label>
         <input id="username" value="{{ user.username }}" disabled />
-        <label for="name">Name</label>
+        <label for="name"><span aria-hidden="true">&#128100;</span> Name</label>
         <input id="name" name="name" value="{{ user.name }}" required />
-        <label for="email">Email</label>
+        <label for="email"><span aria-hidden="true">&#9993;</span> Email</label>
         <input id="email" name="email" type="email" value="{{ user.email }}" required />
-        <label for="password">New password</label>
+        <label for="password"><span aria-hidden="true">&#128274;</span> New password</label>
         <input id="password" name="password" type="password" minlength="8" placeholder="Leave blank to keep current" />
         <button type="submit">Save profile</button>
       </form>
@@ -30,8 +30,33 @@
         </a>
       </div>
 
-      <p class="login-note"><a href="/">Back to dashboard</a></p>
-      <form method="post" action="/logout"><button class="secondary" type="submit">Log out</button></form>
+      <section class="profile-report-schedule">
+        <div class="profile-report-heading">
+          <p class="eyebrow">Alert reports</p>
+          <span id="report-schedule-status" class="report-schedule-status">Off</span>
+        </div>
+        <label class="report-frequency-label" for="report-interval">Report frequency</label>
+        <select id="report-interval">
+          <option value="1">Every 1 hour</option>
+          <option value="2">Every 2 hours</option>
+          <option value="4">Every 4 hours</option>
+          <option value="6">Every 6 hours</option>
+          <option value="12">Every 12 hours</option>
+          <option value="24" selected>Every 24 hours</option>
+          <option value="48">Every 2 days</option>
+          <option value="168">Every 7 days</option>
+        </select>
+        <div class="profile-report-actions">
+          <button id="save-report-schedule-btn" type="button">Enable automatic email</button>
+          <button id="stop-report-schedule-btn" class="secondary" type="button" hidden>Stop automatic email</button>
+        </div>
+        <p id="report-message" class="report-message" role="status"></p>
+      </section>
+
+      <div class="profile-footer">
+        <p class="login-note"><a href="/">Back to dashboard</a></p>
+        <form method="post" action="/logout"><button class="secondary" type="submit">Log out <span aria-hidden="true">&#10132;</span></button></form>
+      </div>
     </div>
     <script>
       window.addEventListener('DOMContentLoaded', () => {
@@ -46,6 +71,56 @@
           });
         }, 2500);
       });
+
+      const intervalEl = document.getElementById('report-interval');
+      const saveButtonEl = document.getElementById('save-report-schedule-btn');
+      const stopButtonEl = document.getElementById('stop-report-schedule-btn');
+      const statusEl = document.getElementById('report-schedule-status');
+      const messageEl = document.getElementById('report-message');
+
+      async function loadReportSchedule() {
+        const response = await fetch('/api/alerts/report-schedule');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!data.schedule || !data.schedule.enabled) return;
+        intervalEl.value = String(data.schedule.interval_hours);
+        statusEl.textContent = 'On';
+        statusEl.classList.add('active');
+        saveButtonEl.textContent = 'Update automatic email';
+        stopButtonEl.hidden = false;
+      }
+
+      saveButtonEl.addEventListener('click', async () => {
+        messageEl.textContent = 'Saving automatic report schedule...';
+        const response = await fetch('/api/alerts/report-schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interval_hours: Number(intervalEl.value) })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          messageEl.textContent = data.detail || 'Could not save the report schedule.';
+          return;
+        }
+        statusEl.textContent = 'On';
+        statusEl.classList.add('active');
+        saveButtonEl.textContent = 'Update automatic email';
+        stopButtonEl.hidden = false;
+        messageEl.textContent = `Reports will be emailed to ${data.schedule.email}.`;
+      });
+
+      stopButtonEl.addEventListener('click', async () => {
+        const response = await fetch('/api/alerts/report-schedule', { method: 'DELETE' });
+        if (!response.ok) return;
+        statusEl.textContent = 'Off';
+        statusEl.classList.remove('active');
+        saveButtonEl.textContent = 'Enable automatic email';
+        stopButtonEl.hidden = true;
+        messageEl.textContent = 'Automatic reports stopped.';
+      });
+
+      loadReportSchedule();
+
     </script>
   </body>
 </html>

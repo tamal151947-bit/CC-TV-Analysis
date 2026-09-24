@@ -12,6 +12,7 @@ Base = declarative_base()
 
 
 class ThreatType(str, Enum):
+    PERSON_MATCH = "person_match"
     THEFT = "theft"
     INTRUSION = "intrusion"
     VIOLENCE = "violence"
@@ -81,8 +82,21 @@ class AlertRecord(Base):
     id = Column(String, primary_key=True, index=True)
     camera_id = Column(String, nullable=False)
     camera_name = Column(String, nullable=False)
+    camera_location = Column(String, nullable=False, default="Unknown location")
     threat_type = Column(String, nullable=False)
     severity = Column(Integer, default=1)
     message = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     image_path = Column(String, nullable=True)
+
+
+class AlertReportSchedule(Base):
+    __tablename__ = "alert_report_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    recipient_email = Column(String, nullable=False)
+    interval_hours = Column(Integer, nullable=False, default=24)
+    enabled = Column(Integer, nullable=False, default=1)
+    next_run_at = Column(DateTime, nullable=False)
+    last_sent_at = Column(DateTime, nullable=True)

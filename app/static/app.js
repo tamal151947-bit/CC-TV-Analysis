@@ -7,6 +7,15 @@ const totalCamerasEl = document.getElementById('total-cameras');
 const activeAlertsEl = document.getElementById('active-alerts');
 const cameraGridEl = document.getElementById('camera-grid');
 const alertListEl = document.getElementById('alert-list');
+const reportStartDateEl = document.getElementById('report-start-date');
+const reportEndDateEl = document.getElementById('report-end-date');
+const reportIntervalEl = document.getElementById('report-interval');
+const downloadReportBtnEl = document.getElementById('download-report-btn');
+const emailReportBtnEl = document.getElementById('email-report-btn');
+const saveReportScheduleBtnEl = document.getElementById('save-report-schedule-btn');
+const stopReportScheduleBtnEl = document.getElementById('stop-report-schedule-btn');
+const reportScheduleStatusEl = document.getElementById('report-schedule-status');
+const reportMessageEl = document.getElementById('report-message');
 const connectFormEl = document.getElementById('connect-camera-form');
 const connectCameraBtnEl = document.getElementById('connect-camera-btn');
 const upgradePlanBtnEl = document.getElementById('upgrade-plan-btn');
@@ -18,7 +27,19 @@ const alertToastEl = document.getElementById('alert-toast');
 const monitoringStatusEl = document.getElementById('monitoring-status');
 const monitoringStatusDotEl = document.getElementById('monitoring-status-dot');
 const monitoringStatusLabelEl = document.getElementById('monitoring-status-label');
+const personMonitorFormEl = document.getElementById('person-monitor-form');
+const personMonitorStatusEl = document.getElementById('person-monitor-status');
+const personMonitorMessageEl = document.getElementById('person-monitor-message');
+const stopPersonMonitorBtnEl = document.getElementById('stop-person-monitor-btn');
+const referenceImageInputEl = personMonitorFormEl.querySelector('input[name="images"]');
+const referenceUploadTitleEl = personMonitorFormEl.querySelector('.upload-title');
+const referenceUploadHelpEl = personMonitorFormEl.querySelector('.upload-help');
+const referenceGalleryEl = document.getElementById('reference-gallery');
+const referenceCountEl = document.getElementById('reference-count');
+let selectedReferenceImages = [];
 let knownAlertIds = new Set();
+let alertsInitialized = false;
+let pendingPersonCameraId = null;
 let cameraRefreshVersion = 0;
 let renderedCameraSignature = null;
 const webcamMediaStreams = new Map();
@@ -56,26 +77,38 @@ async function fetchAlerts() {
   const data = await response.json();
   state.alerts = data.alerts || [];
   const newestAlerts = state.alerts.filter((alert) => !knownAlertIds.has(alert.id));
-  if (knownAlertIds.size > 0 && newestAlerts.length > 0) {
+  if (alertsInitialized && newestAlerts.length > 0) {
     showAlertPopup(newestAlerts[0]);
   }
   knownAlertIds = new Set(state.alerts.map((alert) => alert.id));
+  alertsInitialized = true;
   renderAlerts();
   updateHeader();
 }
 
 function showAlertPopup(alert) {
-  alertToastEl.textContent = `${alert.threat_type.toUpperCase()} - ${alert.camera_name}`;
+  const detectedAt = new Date(alert.timestamp).toLocaleString();
+  alertToastEl.textContent = `${alert.threat_type === 'person_match' ? 'PERSON DETECTED' : alert.threat_type.toUpperCase()} - ${alert.camera_name} - ${detectedAt}`;
   alertToastEl.classList.add('visible');
   window.setTimeout(() => alertToastEl.classList.remove('visible'), 6000);
   if ('Notification' in window && Notification.permission === 'granted') {
     new Notification('CCTV AI Guard alert', { body: alert.message });
   }
+  if (alert.threat_type === 'person_match') {
+    const cameraCard = document.querySelector(`[data-camera-card-id="${alert.camera_id}"]`);
+    if (cameraCard) {
+      cameraCard.classList.add('person-match-active');
+      cameraCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window.setTimeout(() => cameraCard.classList.remove('person-match-active'), 8000);
+    } else {
+      pendingPersonCameraId = alert.camera_id;
+    }
+  }
 }
 
 function updateHeader() {
   totalCamerasEl.textContent = state.cameras.length;
-  activeAlertsEl.textContent = state.alerts.length;
+  activeAlertsEl.textContent = state.cameras.length ? state.alerts.length : 0;
   const isMonitoring = state.cameras.some((camera) => camera.status === 'online' || camera.status === 'alert');
   monitoringStatusEl.textContent = isMonitoring ? 'Monitoring live' : 'Monitoring off';
   monitoringStatusDotEl.classList.toggle('is-offline', !isMonitoring);
@@ -105,7 +138,14 @@ function renderCameras() {
   }
   state.cameras.forEach((camera) => {
     const card = document.createElement('article');
+    card.dataset.cameraCardId = camera.id;
     card.className = `camera-card ${camera.status === 'alert' ? 'alert' : ''}`;
+    if (camera.id === pendingPersonCameraId) {
+      card.classList.add('person-match-active');
+      pendingPersonCameraId = null;
+      window.setTimeout(() => card.classList.remove('person-match-active'), 8000);
+      window.setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+    }
     const isWebcam = camera.rtsp_url.startsWith('webcam://');
     card.innerHTML = `
       <div class="camera-card-header">
@@ -260,15 +300,196 @@ function renderAlerts() {
     return;
   }
 
-  state.alerts.slice(0, 8).forEach((alert) => {
+  state.alerts.slice(0, 10).forEach((alert) => {
     const item = document.createElement('li');
+    item.className = alert.threat_type === 'person_match' ? 'person-match-alert' : '';
     item.innerHTML = `
-      <strong>${alert.camera_name}</strong><br>
+      <strong>Camera: ${alert.camera_name}</strong><br>
       ${alert.message}<br>
-      <small>${alert.threat_type} • ${new Date(alert.timestamp).toLocaleString()}</small>
+      <small>${alert.threat_type === 'person_match' ? 'PERSON DETECTED' : alert.threat_type} • Detected: ${new Date(alert.timestamp).toLocaleString()}</small>
     `;
     alertListEl.appendChild(item);
   });
+}
+
+function toDateInputValue(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function setDefaultReportDates() {
+  const today = new Date();
+  const weekAgo = new Date(today);
+  weekAgo.setDate(today.getDate() - 7);
+  reportStartDateEl.value = toDateInputValue(weekAgo);
+  reportEndDateEl.value = toDateInputValue(today);
+}
+
+function reportRange() {
+  const startDate = reportStartDateEl.value;
+  const endDate = reportEndDateEl.value;
+  if (!startDate || !endDate || endDate < startDate) {
+    reportMessageEl.textContent = 'Choose a valid date range.';
+    return null;
+  }
+  return { start_date: startDate, end_date: endDate };
+}
+
+function downloadAlertReport() {
+  const range = reportRange();
+  if (!range) return;
+  const link = document.createElement('a');
+  link.href = `/api/alerts/export?start_date=${encodeURIComponent(range.start_date)}&end_date=${encodeURIComponent(range.end_date)}`;
+  link.download = `alert-report-${range.start_date}-to-${range.end_date}.xlsx`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  reportMessageEl.textContent = 'Excel report download started.';
+}
+
+async function emailAlertReport() {
+  const range = reportRange();
+  if (!range) return;
+  reportMessageEl.textContent = 'Sending Excel report...';
+  const response = await fetch('/api/alerts/report-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(range)
+  });
+  const data = await response.json();
+  reportMessageEl.textContent = response.ok ? `Report sent to ${data.email}.` : (data.detail || 'Report email failed.');
+}
+
+async function loadReportSchedule() {
+  if (!reportIntervalEl || !reportScheduleStatusEl) return;
+  const response = await fetch('/api/alerts/report-schedule');
+  if (!response.ok) return;
+  const data = await response.json();
+  const schedule = data.schedule;
+  if (!schedule || !schedule.enabled) return;
+  reportIntervalEl.value = String(schedule.interval_hours);
+  reportScheduleStatusEl.textContent = `Automatic reports every ${schedule.interval_hours}h`;
+  saveReportScheduleBtnEl.textContent = 'Update automatic email';
+  stopReportScheduleBtnEl.hidden = false;
+}
+
+async function saveReportSchedule() {
+  if (!reportIntervalEl || !reportMessageEl) return;
+  reportMessageEl.textContent = 'Saving automatic report schedule...';
+  const response = await fetch('/api/alerts/report-schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ interval_hours: Number(reportIntervalEl.value) })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    reportMessageEl.textContent = data.detail || 'Could not save the report schedule.';
+    return;
+  }
+  reportScheduleStatusEl.textContent = `Automatic reports every ${data.schedule.interval_hours}h`;
+  saveReportScheduleBtnEl.textContent = 'Update automatic email';
+  stopReportScheduleBtnEl.hidden = false;
+  reportMessageEl.textContent = `Reports will be emailed to ${data.schedule.email}.`;
+}
+
+async function stopReportSchedule() {
+  if (!stopReportScheduleBtnEl || !reportMessageEl) return;
+  const response = await fetch('/api/alerts/report-schedule', { method: 'DELETE' });
+  if (!response.ok) return;
+  reportScheduleStatusEl.textContent = 'Automatic reports off';
+  saveReportScheduleBtnEl.textContent = 'Enable automatic email';
+  stopReportScheduleBtnEl.hidden = true;
+  reportMessageEl.textContent = 'Automatic reports stopped.';
+}
+
+async function startPersonMonitor(event) {
+  event.preventDefault();
+  if (!selectedReferenceImages.length) {
+    personMonitorMessageEl.textContent = 'Choose a reference picture first.';
+    referenceImageInputEl.focus();
+    return;
+  }
+  personMonitorMessageEl.textContent = 'Preparing live watch...';
+  let response;
+  let data;
+  try {
+    const formData = new FormData(personMonitorFormEl);
+    formData.delete('images');
+    selectedReferenceImages.forEach((file) => formData.append('images', file));
+    response = await fetch('/api/person-monitor', { method: 'POST', body: formData });
+    data = await response.json();
+  } catch (error) {
+    personMonitorMessageEl.textContent = 'Upload failed. Check that the server is running and try again.';
+    return;
+  }
+  if (!response.ok) {
+    personMonitorMessageEl.textContent = data.detail || 'Could not start person monitoring.';
+    return;
+  }
+  personMonitorStatusEl.textContent = `Watching: ${data.name}`;
+  personMonitorStatusEl.classList.add('active');
+  personMonitorMessageEl.textContent = `${data.pictures} reference picture${data.pictures === 1 ? '' : 's'} active. All live cameras are being checked.`;
+}
+
+referenceImageInputEl.addEventListener('change', () => {
+  const file = referenceImageInputEl.files[0];
+  referenceImageInputEl.value = '';
+  if (!file) {
+    return;
+  }
+  if (selectedReferenceImages.length >= 5) {
+    personMonitorMessageEl.textContent = 'You can add up to 5 reference pictures.';
+    return;
+  }
+  selectedReferenceImages.push(file);
+  referenceUploadTitleEl.textContent = `${selectedReferenceImages.length} picture${selectedReferenceImages.length === 1 ? '' : 's'} selected`;
+  referenceUploadHelpEl.textContent = `${file.name} added. Select another angle or start live watch.`;
+  renderReferenceImages();
+});
+
+function renderReferenceImages() {
+  referenceGalleryEl.innerHTML = '';
+  referenceCountEl.textContent = `${selectedReferenceImages.length}/5 angles uploaded`;
+  selectedReferenceImages.forEach((file, index) => {
+    const item = document.createElement('div');
+    item.className = 'reference-thumb';
+    const preview = document.createElement('img');
+    preview.src = URL.createObjectURL(file);
+    preview.alt = `Reference angle ${index + 1}`;
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.title = 'Remove reference angle';
+    removeButton.setAttribute('aria-label', `Remove reference angle ${index + 1}`);
+    removeButton.textContent = '\u{1F5D1}';
+    item.append(preview, removeButton);
+    removeButton.addEventListener('click', () => {
+      selectedReferenceImages.splice(index, 1);
+      referenceUploadTitleEl.textContent = selectedReferenceImages.length ? `${selectedReferenceImages.length} picture${selectedReferenceImages.length === 1 ? '' : 's'} selected` : 'Upload reference pictures';
+      referenceUploadHelpEl.textContent = selectedReferenceImages.length ? 'Select another angle or start live watch.' : 'Select one picture at a time. Add up to 5 different angles.';
+      renderReferenceImages();
+    });
+    referenceGalleryEl.appendChild(item);
+  });
+  if (selectedReferenceImages.length < 5) {
+    const addAngle = document.createElement('button');
+    addAngle.type = 'button';
+    addAngle.className = 'add-angle-btn';
+    addAngle.innerHTML = '<span aria-hidden="true">+</span><span>Add next angle</span>';
+    addAngle.addEventListener('click', () => referenceImageInputEl.click());
+    referenceGalleryEl.appendChild(addAngle);
+  }
+}
+
+async function stopPersonMonitor() {
+  const response = await fetch('/api/person-monitor', { method: 'DELETE' });
+  if (!response.ok) return;
+  personMonitorStatusEl.textContent = 'Off';
+  personMonitorStatusEl.classList.remove('active');
+  personMonitorMessageEl.textContent = 'Person monitoring stopped.';
+  personMonitorFormEl.reset();
+  selectedReferenceImages = [];
+  referenceUploadTitleEl.textContent = 'Upload reference pictures';
+  referenceUploadHelpEl.textContent = 'Select one picture at a time. Add up to 5 different angles.';
+  renderReferenceImages();
 }
 
 async function simulateAlert() {
@@ -293,8 +514,17 @@ async function clearAlerts() {
 document.getElementById('simulate-alert-btn').addEventListener('click', simulateAlert);
 document.getElementById('clear-alerts-btn').addEventListener('click', clearAlerts);
 connectFormEl.addEventListener('submit', connectCamera);
+personMonitorFormEl.addEventListener('submit', startPersonMonitor);
+stopPersonMonitorBtnEl.addEventListener('click', stopPersonMonitor);
+downloadReportBtnEl.addEventListener('click', downloadAlertReport);
+emailReportBtnEl.addEventListener('click', emailAlertReport);
+if (saveReportScheduleBtnEl) saveReportScheduleBtnEl.addEventListener('click', saveReportSchedule);
+if (stopReportScheduleBtnEl) stopReportScheduleBtnEl.addEventListener('click', stopReportSchedule);
 connectionTypeEl.addEventListener('change', updateConnectionHelp);
 updateConnectionHelp();
+renderReferenceImages();
+setDefaultReportDates();
+if (reportIntervalEl) loadReportSchedule();
 
 fetchCameras();
 fetchAlerts();

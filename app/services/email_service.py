@@ -4,6 +4,7 @@ import os
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
+from io import BytesIO
 
 
 class EmailAlertService:
@@ -34,6 +35,29 @@ class EmailAlertService:
                     filename=os.path.basename(image_path),
                 )
 
+            with smtplib.SMTP(self.smtp_host, self.smtp_port) as smtp:
+                smtp.starttls()
+                smtp.login(self.username, self.password)
+                smtp.send_message(msg)
+            return True
+        except Exception:
+            return False
+
+    def send_attachment(self, subject: str, body: str, attachment: BytesIO, filename: str, to_address: str) -> bool:
+        if not self.username or not self.password or not to_address:
+            return False
+        try:
+            msg = EmailMessage()
+            msg["Subject"] = subject
+            msg["From"] = self.username
+            msg["To"] = to_address
+            msg.set_content(body)
+            msg.add_attachment(
+                attachment.getvalue(),
+                maintype="application",
+                subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=filename,
+            )
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as smtp:
                 smtp.starttls()
                 smtp.login(self.username, self.password)

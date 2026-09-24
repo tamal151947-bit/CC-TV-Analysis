@@ -14,6 +14,8 @@ settings = get_settings()
 class YOLODetectionService:
     def __init__(self, model_path: str | None = None) -> None:
         self.model_path = model_path or settings.yolo_model_path
+        if not os.path.exists(self.model_path) and os.path.exists("yolov8n.pt"):
+            self.model_path = "yolov8n.pt"
         self.model = None
         self._load_model()
 
@@ -58,6 +60,26 @@ class YOLODetectionService:
             return list(threats.items()), detections
         except Exception:
             return [], []
+
+    def detect_person_crops(self, frame: Any) -> list[Any]:
+        if self.model is None:
+            return []
+        try:
+            result = self.model(frame, verbose=False, classes=[0], conf=0.35)[0]
+            height, width = frame.shape[:2]
+            crops = []
+            for box in result.boxes.xyxy.int().cpu().tolist():
+                left, top, right, bottom = box
+                left = max(0, min(left, width - 1))
+                top = max(0, min(top, height - 1))
+                right = max(left + 1, min(right, width))
+                bottom = max(top + 1, min(bottom, height))
+                crop = frame[top:bottom, left:right]
+                if crop.size:
+                    crops.append(crop)
+            return crops
+        except Exception:
+            return []
 
         try:
             results = self.model(frame, verbose=False)[0]

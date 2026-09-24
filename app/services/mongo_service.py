@@ -15,4 +15,7 @@ def get_mongo_database():
     database = client[settings.mongodb_database]
     database.users.create_index("username", unique=True)
     database.users.create_index("email", unique=True)
+    database.alerts.create_index("alert_id", unique=True)
+    database.alerts.create_index([("camera_id", 1), ("timestamp", -1)])
+    database.alerts.create_index("timestamp")
     return database

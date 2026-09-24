@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CCTV AI Guard</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=15" />
   </head>
   <body>
     <div class="layout">
@@ -66,14 +66,64 @@
 
         <section id="camera-grid" class="camera-grid"></section>
 
-        <section class="alerts-panel">
-          <h3>Recent alerts</h3>
-          <ul id="alert-list" class="alert-list"></ul>
-        </section>
+        <div class="dashboard-bottom-grid">
+          <section class="alerts-panel dashboard-panel">
+            <div class="alerts-heading">
+              <div>
+                <p class="eyebrow">Activity log</p>
+                <h3>Recent alerts</h3>
+              </div>
+            </div>
+            <div class="alert-report-tools">
+              <div class="report-tools-heading">
+                <div>
+                  <p class="eyebrow">Reports</p>
+                  <h4>Export alert history</h4>
+                </div>
+              </div>
+              <form id="alert-report-form" class="alert-report-form">
+                <label>From <input id="report-start-date" type="date" required /></label>
+                <label>To <input id="report-end-date" type="date" required /></label>
+                <div class="report-actions">
+                  <button id="download-report-btn" type="button">Download Excel</button>
+                  <button id="email-report-btn" class="secondary" type="button">Email Excel</button>
+                </div>
+              </form>
+              <p id="report-message" class="report-message" role="status"></p>
+            </div>
+            <ul id="alert-list" class="alert-list"></ul>
+          </section>
+
+          <section class="person-monitor-panel dashboard-panel">
+            <div class="alerts-heading">
+              <div>
+                <p class="eyebrow">Live identity watch</p>
+                <h3>Person monitor</h3>
+              </div>
+              <span id="person-monitor-status" class="monitor-status">Off</span>
+            </div>
+            <form id="person-monitor-form" class="person-monitor-form">
+              <label class="reference-upload">
+                <span class="upload-icon" aria-hidden="true">+</span>
+                <span class="upload-title">Upload reference pictures</span>
+                <span class="upload-help">Select one picture at a time. Add up to 5 different angles.</span>
+                <input name="images" type="file" accept="image/*" />
+                <span class="upload-limit">*Max file size 5MB</span>
+              </label>
+              <div class="reference-gallery" id="reference-gallery" aria-live="polite"></div>
+              <p class="reference-count" id="reference-count">0/5 angles uploaded</p>
+              <div class="person-monitor-actions">
+                <button type="submit" class="start-watch-btn"><span aria-hidden="true">&#9654;</span> Start live watch</button>
+                <button id="stop-person-monitor-btn" class="secondary stop-watch-btn" type="button"><span aria-hidden="true">&#9632;</span> Stop</button>
+              </div>
+              <p id="person-monitor-message" class="person-monitor-message" role="status">Monitoring is off.</p>
+            </form>
+          </section>
+        </div>
       </main>
     </div>
     <div id="alert-toast" class="alert-toast" role="alert" aria-live="assertive"></div>
 
-    <script src="/static/app.js?v=11"></script>
+    <script src="/static/app.js?v=19"></script>
   </body>
 </html>
